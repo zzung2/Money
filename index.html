@@ -69,6 +69,7 @@ input,select{width:100%;border:1px solid var(--line);background:var(--bg);color:
 .more{width:100%;margin-top:12px;border:1px solid var(--line);background:var(--card);color:var(--tx);border-radius:12px;padding:12px;font-size:14px}
 .hide{display:none}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -89,6 +90,15 @@ input,select{width:100%;border:1px solid var(--line);background:var(--bg);color:
     <div id="list"></div>
     <h3>신용카드 결제 예정 금액</h3>
     <div class="card" id="sched"></div>
+    <h3>엑셀 내보내기 · 백업</h3>
+    <div class="card" style="padding:12px 14px">
+      <button class="more" style="margin:0 0 8px" id="xM">엑셀로 저장</button>
+      <button class="more" style="margin:0 0 8px" id="xA">전체 내역 엑셀로 저장 (월별 시트)</button>
+      <button class="more" style="margin:0 0 8px" id="xB">백업 파일 저장 (.json)</button>
+      <button class="more" style="margin:0" id="xR">백업 파일 불러오기</button>
+      <input type="file" id="xF" accept=".json,application/json" class="hide">
+      <div style="color:var(--mut);font-size:12px;margin-top:10px">폰을 바꾸거나 브라우저 데이터를 지울 때에 대비해 가끔 백업 파일을 저장해두세요.</div>
+    </div>
   </div>
 
   <div id="pgA" class="hide">
@@ -198,6 +208,7 @@ function renderL(){
   if(last)h+="</div>";
   if(its.length>10)h+='<button class="more" data-more="1">'+(S.showAll?"접기":"더 보기 ("+(its.length-10)+"건)")+'</button>';
   $("list").innerHTML=h;
+  $("xM").textContent=(S.ym.getMonth()+1)+"월 내역 엑셀로 저장";
   renderSched();
 }
 
@@ -213,7 +224,7 @@ function renderSched(){
     for(var k=0;k<n;k++){var idx=s+k-base;if(idx<0||idx>=N)continue;tot[idx]+=b+(k===0?r:0)}
   });
   var sum=tot.reduce(function(a,b){return a+b},0);
-  var h='<div class="arow" style="flex-wrap:wrap"><span>결제일 매월</span><input id="bp" type="number" inputmode="numeric" min="1" max="28" value="'+p+'" style="width:62px;flex:none"><span>일 · 집계 마감 매월</span><input id="bc" type="number" inputmode="numeric" min="1" max="28" value="'+c+'" style="width:62px;flex:none"><span>일</span></div>';
+  var h='<details'+(S.billOpen?' open':'')+' style="padding:8px 0;border-bottom:1px solid var(--line)"><summary style="font-size:13px;color:var(--mut);cursor:pointer">결제일 설정 · 매월 '+p+'일 결제 (마감 '+c+'일)</summary><div style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;margin-top:8px">결제일<input id="bp" type="number" inputmode="numeric" min="1" max="28" value="'+p+'" style="width:56px;margin:0;padding:6px 8px">일 · 집계 마감<input id="bc" type="number" inputmode="numeric" min="1" max="28" value="'+c+'" style="width:56px;margin:0;padding:6px 8px">일</div></details>';
   if(!sum){$("sched").innerHTML=h+'<div class="empty">결제 예정인 신용카드 내역이 없어요</div>';return}
   for(i=0;i<N;i++){
     var m=base+i,pm=m-1;
@@ -223,6 +234,7 @@ function renderSched(){
   }
   $("sched").innerHTML=h;
 }
+$("sched").addEventListener("toggle",function(e){S.billOpen=e.target.open},true);
 $("sched").onchange=function(e){
   var id=e.target.id;if(id!=="bp"&&id!=="bc")return;
   var v=Math.min(28,Math.max(1,Math.round(Number(e.target.value))||1));
@@ -320,6 +332,70 @@ $("list").onclick=function(e){
 function tab(a){$("pgL").classList.toggle("hide",a);$("pgA").classList.toggle("hide",!a);$("fab").classList.toggle("hide",a);$("tabL").className=a?"":"on";$("tabA").className=a?"on":""}
 $("tabL").onclick=function(){tab(false)};$("tabA").onclick=function(){tab(true)};
 
+/* ---------- export / backup ---------- */
+var H=["날짜","구분","카테고리","결제수단","할부","금액","메모"];
+async function saveFile(name,blob){
+  var dl=null;
+  try{dl=await claude.use("downloads")}catch(e){}
+  if(dl){try{await dl.save({filename:name,data:blob})}catch(e){if(!e||e.code!=="declined")alert("저장하지 못해요.")}return}
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1500);
+}
+function txRows(list){
+  return list.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:(a.ts||0)-(b.ts||0)}).map(function(x){
+    return {"날짜":x.date,"구분":x.type==="i"?"수입":"지출","카테고리":x.cat,"결제수단":x.type==="i"?"":(x.pay==="card"?(x.card||"카드"):"현금"),"할부":x.inst>1?x.inst+"개월":"","금액":x.amount,"메모":x.memo||""};
+  });
+}
+function xlsxBlob(sheets){
+  var wb=XLSX.utils.book_new();
+  sheets.forEach(function(s){
+    var ws=XLSX.utils.json_to_sheet(s.rows,{header:s.header});
+    ws["!cols"]=s.header.map(function(h){return {wch:h==="메모"?24:(h==="항목"?16:13)}});
+    XLSX.utils.book_append_sheet(wb,ws,s.name);
+  });
+  var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+  return new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+}
+function needXlsx(){if(window.XLSX)return false;alert("엑셀 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침 해주세요.");return true}
+function exportMonth(){
+  if(needXlsx())return;
+  var k=S.ym.getFullYear()+"-"+String(S.ym.getMonth()+1).padStart(2,"0");
+  var rows=txRows(S.items.filter(function(x){return (x.date||"").slice(0,7)===k}));
+  if(!rows.length){alert("이 달에는 내역이 없어요.");return}
+  saveFile("가계부_"+k+".xlsx",xlsxBlob([{name:k,header:H,rows:rows}]));
+}
+function exportAll(){
+  if(needXlsx())return;
+  var ms={};S.items.forEach(function(x){if(x.date)(ms[x.date.slice(0,7)]=ms[x.date.slice(0,7)]||[]).push(x)});
+  var keys=Object.keys(ms).sort();
+  if(!keys.length){alert("내보낼 내역이 없어요.");return}
+  var sum=keys.map(function(k){var i=0,e=0;ms[k].forEach(function(x){if(x.type==="i")i+=x.amount;else e+=x.amount});return {"월":k,"수입":i,"지출":e,"잔액":i-e}});
+  var sheets=[{name:"월별요약",header:["월","수입","지출","잔액"],rows:sum}];
+  keys.forEach(function(k){sheets.push({name:k,header:H,rows:txRows(ms[k])})});
+  sheets.push({name:"자산",header:["항목","구분","금액"],rows:S.assets.map(function(a){return {"항목":a.name,"구분":a.debt?"부채":"자산","금액":a.amt}})});
+  saveFile("가계부_전체_"+iso(new Date())+".xlsx",xlsxBlob(sheets));
+}
+function backup(){
+  var o={v:2,items:S.items,cats:S.cats,cards:S.cards,assets:S.assets,billing:S.billing};
+  saveFile("가계부_백업_"+iso(new Date())+".json",new Blob([JSON.stringify(o)],{type:"application/json"}));
+}
+async function restore(file){
+  var o;try{o=JSON.parse(await file.text())}catch(e){alert("백업 파일을 읽지 못했어요.");return}
+  if(!o||!Array.isArray(o.items)){alert("올바른 백업 파일이 아니에요.");return}
+  if(!confirm("백업 파일을 불러올까요? 없는 내역만 추가되고, 카테고리·카드·자산·결제일 설정은 백업 내용으로 바뀔어요."))return;
+  applySettings(o);
+  var have={};S.items.forEach(function(x){have[x.id]=1});
+  var add=o.items.filter(function(x){return x&&x.id&&!have[x.id]&&x.date&&x.amount>0});
+  if(S.col){
+    for(var i=0;i<add.length;i++){try{await S.col.doc("t"+add[i].id).set(add[i])}catch(e){alert("일부 내역을 저장하지 못했어요.");break}}
+    await saveSettings();
+  }else{S.items=S.items.concat(add);persistLocal()}
+  renderL();renderA();alert(add.length+"건을 불러왔어요.");
+}
+$("xM").onclick=exportMonth;$("xA").onclick=exportAll;$("xB").onclick=backup;
+$("xR").onclick=function(){$("xF").click()};
+$("xF").onchange=function(e){var f=e.target.files[0];e.target.value="";if(f)restore(f)};
+
 /* ---------- init ---------- */
 function applySettings(s){
   if(s.cats)S.cats=s.cats;if(s.cards)S.cards=s.cards;if(s.assets)S.assets=s.assets;if(s.billing)S.billing=s.billing;
@@ -340,8 +416,7 @@ async function init(){
     },function(){$("note").innerHTML='<div class="note">데이터를 불러오지 못했어요. 새로고침 해주세요.</div>'});
   }else{
     try{var raw=localStorage.getItem("ledger-v2");if(raw){var o=JSON.parse(raw);S.items=o.items||[];applySettings(o)}}catch(e){}
-    $("note").innerHTML='<div class="note">로그인 상태가 아니어서 이 기기의 브라우저에만 저장돼요.</div>';
-    renderL();renderA();
+        renderL();renderA();
   }
 }
 init();
