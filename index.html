@@ -69,7 +69,7 @@ input,select{width:100%;border:1px solid var(--line);background:var(--bg);color:
 .more{width:100%;margin-top:12px;border:1px solid var(--line);background:var(--card);color:var(--tx);border-radius:12px;padding:12px;font-size:14px}
 .hide{display:none}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -333,47 +333,128 @@ function tab(a){$("pgL").classList.toggle("hide",a);$("pgA").classList.toggle("h
 $("tabL").onclick=function(){tab(false)};$("tabA").onclick=function(){tab(true)};
 
 /* ---------- export / backup ---------- */
-var H=["날짜","구분","카테고리","결제수단","할부","금액","메모"];
 async function saveFile(name,blob){
   var dl=null;
   try{dl=await claude.use("downloads")}catch(e){}
-  if(dl){try{await dl.save({filename:name,data:blob})}catch(e){if(!e||e.code!=="declined")alert("저장하지 못해요.")}return}
+  if(dl){try{await dl.save({filename:name,data:blob})}catch(e){if(!e||e.code!=="declined")alert("저장하지 못했어요.")}return}
   var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
   setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1500);
 }
-function txRows(list){
-  return list.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:(a.ts||0)-(b.ts||0)}).map(function(x){
-    return {"날짜":x.date,"구분":x.type==="i"?"수입":"지출","카테고리":x.cat,"결제수단":x.type==="i"?"":(x.pay==="card"?(x.card||"카드"):"현금"),"할부":x.inst>1?x.inst+"개월":"","금액":x.amount,"메모":x.memo||""};
-  });
+var GREEN="FF2F7D5B",RED="FFD2574A",LINE="FFE6E4DC",ZEBRA="FFF6F5F1",CHIP="FFEEF0EA",WHITE="FFFFFFFF";
+var MONEY='#,##0"원";[Red]-#,##0"원"';
+function fnt(o){return Object.assign({name:"맑은 고딕",size:11},o||{})}
+function bd(){var s={style:"thin",color:{argb:LINE}};return {top:s,bottom:s,left:s,right:s}}
+function fill(c,argb){c.fill={type:"pattern",pattern:"solid",fgColor:{argb:argb}}}
+function cell(ws,r,c,v,o){
+  o=o||{};var x=ws.getCell(r,c);x.value=v;x.font=fnt({bold:!!o.bold,color:o.color?{argb:o.color}:undefined});x.border=bd();
+  x.alignment={vertical:"middle",horizontal:o.h||"left",wrapText:!!o.wrap};
+  if(o.fmt)x.numFmt=o.fmt;if(o.bg)fill(x,o.bg);return x;
 }
-function xlsxBlob(sheets){
-  var wb=XLSX.utils.book_new();
-  sheets.forEach(function(s){
-    var ws=XLSX.utils.json_to_sheet(s.rows,{header:s.header});
-    ws["!cols"]=s.header.map(function(h){return {wch:h==="메모"?24:(h==="항목"?16:13)}});
-    XLSX.utils.book_append_sheet(wb,ws,s.name);
-  });
-  var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
-  return new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+function head(ws,r,labels){labels.forEach(function(l,i){cell(ws,r,i+1,l,{bold:true,color:WHITE,bg:GREEN,h:"center"})});ws.getRow(r).height=22}
+function title(ws,text,span){ws.mergeCells(1,1,1,span);var c=ws.getCell(1,1);c.value=text;c.font=fnt({bold:true,size:16,color:{argb:GREEN}});ws.getRow(1).height=30}
+function newSheet(wb,name,widths,freeze){
+  var ws=wb.addWorksheet(name,{views:[{state:freeze?"frozen":"normal",ySplit:freeze||0,showGridLines:false}]});
+  widths.forEach(function(w,i){ws.getColumn(i+1).width=w});
+  ws.pageSetup={paperSize:9,orientation:"portrait",fitToPage:true,fitToWidth:1,fitToHeight:0};return ws;
 }
-function needXlsx(){if(window.XLSX)return false;alert("엑셀 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침 해주세요.");return true}
+function sortTx(list){return list.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:(a.ts||0)-(b.ts||0)})}
+function sums(list){var i=0,e=0;list.forEach(function(x){if(x.type==="i")i+=x.amount;else e+=x.amount});return {i:i,e:e}}
+function expBy(list){var by={};list.forEach(function(x){if(x.type==="e")by[x.cat]=(by[x.cat]||0)+x.amount});return by}
+function colL(n){var s="";while(n>0){s=String.fromCharCode(65+(n-1)%26)+s;n=Math.floor((n-1)/26)}return s}
+
+function monthSheet(wb,key,list){
+  var rows=sortTx(list),last=Math.max(6+rows.length,7),t=sums(rows);
+  var ws=newSheet(wb,key,[13,8,14,18,10,15,28],6);
+  title(ws,key.slice(0,4)+"년 "+Number(key.slice(5))+"월 가계부",7);
+  var rg=function(c){return "$"+c+"$7:$"+c+"$"+last};
+  [["수입",t.i,GREEN],["지출",t.e,RED]].forEach(function(s,k){
+    var r=2+k;cell(ws,r,1,s[0],{bold:true,bg:CHIP,h:"center"});cell(ws,r,3,null);ws.mergeCells(r,2,r,3);
+    cell(ws,r,2,{formula:"SUMIFS("+rg("F")+","+rg("B")+',"'+s[0]+'")',result:s[1]},{bold:true,color:s[2],h:"right",fmt:MONEY});
+  });
+  cell(ws,4,1,"잔액",{bold:true,bg:CHIP,h:"center"});cell(ws,4,3,null);ws.mergeCells(4,2,4,3);
+  cell(ws,4,2,{formula:"B2-B3",result:t.i-t.e},{bold:true,h:"right",fmt:MONEY});
+  head(ws,6,["날짜","구분","카테고리","결제수단","할부","금액","메모"]);
+  rows.forEach(function(x,k){
+    var r=7+k,p=x.date.split("-"),inc=x.type==="i",bg=k%2?ZEBRA:null,col=inc?GREEN:RED;
+    cell(ws,r,1,new Date(Date.UTC(+p[0],+p[1]-1,+p[2])),{h:"center",fmt:"yyyy-mm-dd",bg:bg});
+    cell(ws,r,2,inc?"수입":"지출",{h:"center",color:col,bold:true,bg:bg});
+    cell(ws,r,3,x.cat,{bg:bg});
+    cell(ws,r,4,inc?"":(x.pay==="card"?(x.card||"카드"):"현금"),{bg:bg});
+    cell(ws,r,5,x.inst>1?x.inst+"개월":"",{h:"center",bg:bg});
+    cell(ws,r,6,x.amount,{h:"right",fmt:'#,##0"원"',color:col,bg:bg});
+    cell(ws,r,7,x.memo||"",{wrap:true,bg:bg});
+  });
+  if(rows.length)ws.autoFilter={from:{row:6,column:1},to:{row:last,column:7}};
+}
+function catSheet(wb,key,list){
+  var by=expBy(list),cs=Object.keys(by).sort(function(a,b){return by[b]-by[a]});if(!cs.length)return;
+  var tot=cs.reduce(function(s,c){return s+by[c]},0),end=3+cs.length,q="'"+key+"'!";
+  var ws=newSheet(wb,"카테고리별",[16,16,10,34]);
+  title(ws,key.slice(0,4)+"년 "+Number(key.slice(5))+"월 카테고리별 지출",4);
+  head(ws,3,["카테고리","지출 금액","비중","그래프"]);
+  cs.forEach(function(c,k){
+    var r=4+k,bg=k%2?ZEBRA:null,n=Math.round(by[c]/tot*25);
+    cell(ws,r,1,c,{bg:bg});
+    cell(ws,r,2,{formula:"SUMIFS("+q+"$F:$F,"+q+"$C:$C,A"+r+","+q+'$B:$B,"지출")',result:by[c]},{h:"right",fmt:'#,##0"원"',bg:bg});
+    cell(ws,r,3,{formula:"B"+r+"/$B$"+(end+1),result:by[c]/tot},{h:"center",fmt:"0.0%",bg:bg});
+    cell(ws,r,4,{formula:'REPT("■",ROUND(C'+r+"*25,0))",result:new Array(n+1).join("■")},{color:GREEN,bg:bg});
+  });
+  cell(ws,end+1,1,"합계",{bold:true,bg:CHIP,h:"center"});
+  cell(ws,end+1,2,{formula:"SUM(B4:B"+end+")",result:tot},{bold:true,bg:CHIP,h:"right",fmt:'#,##0"원"'});
+  cell(ws,end+1,3,{formula:"SUM(C4:C"+end+")",result:1},{bold:true,bg:CHIP,h:"center",fmt:"0.0%"});
+  cell(ws,end+1,4,null,{bg:CHIP});
+}
+function summarySheets(wb,keys,ms){
+  var ws=newSheet(wb,"요약",[14,16,16,16]);title(ws,"가계부 요약",4);head(ws,3,["월","수입","지출","잔액"]);
+  var ti=0,te=0,n=keys.length;
+  keys.forEach(function(k,j){var s=sums(ms[k]),r=4+j,bg=j%2?ZEBRA:null;ti+=s.i;te+=s.e;
+    cell(ws,r,1,k,{h:"center",bg:bg});cell(ws,r,2,s.i,{h:"right",fmt:MONEY,color:GREEN,bg:bg});cell(ws,r,3,s.e,{h:"right",fmt:MONEY,color:RED,bg:bg});
+    cell(ws,r,4,{formula:"B"+r+"-C"+r,result:s.i-s.e},{h:"right",fmt:MONEY,bold:true,bg:bg})});
+  var t=4+n;cell(ws,t,1,"합계",{bold:true,bg:CHIP,h:"center"});
+  [["B",ti],["C",te]].forEach(function(a,j){cell(ws,t,2+j,{formula:"SUM("+a[0]+"4:"+a[0]+(t-1)+")",result:a[1]},{bold:true,bg:CHIP,h:"right",fmt:MONEY})});
+  cell(ws,t,4,{formula:"B"+t+"-C"+t,result:ti-te},{bold:true,bg:CHIP,h:"right",fmt:MONEY});
+  var all={};keys.forEach(function(k){var b=expBy(ms[k]);Object.keys(b).forEach(function(c){all[c]=1})});
+  var cs=Object.keys(all),w2=newSheet(wb,"카테고리별 지출",[16].concat(keys.map(function(){return 13}),[15]));
+  title(w2,"월별 카테고리별 지출",keys.length+2);head(w2,3,["카테고리"].concat(keys,["합계"]));
+  var bys=keys.map(function(k){return expBy(ms[k])}),cT=keys.length+2;
+  cs.forEach(function(c,j){var r=4+j,bg=j%2?ZEBRA:null,sm=0;cell(w2,r,1,c,{bg:bg});
+    keys.forEach(function(k,m){var v=bys[m][c]||0;sm+=v;cell(w2,r,2+m,v||null,{h:"right",fmt:'#,##0',bg:bg})});
+    cell(w2,r,cT,{formula:"SUM(B"+r+":"+colL(cT-1)+r+")",result:sm},{h:"right",bold:true,fmt:'#,##0"원"',bg:bg})});
+  var tr=4+cs.length;cell(w2,tr,1,"합계",{bold:true,bg:CHIP,h:"center"});
+  for(var c=2;c<=cT;c++){var tv=0;if(c<cT)bys[c-2]&&Object.keys(bys[c-2]).forEach(function(z){tv+=bys[c-2][z]});else tv=te;
+    cell(w2,tr,c,{formula:"SUM("+colL(c)+"4:"+colL(c)+(tr-1)+")",result:tv},{bold:true,bg:CHIP,h:"right",fmt:'#,##0'})}
+}
+function assetSheet(wb){
+  var ws=newSheet(wb,"자산",[22,10,18]),a=0,d=0;title(ws,"보유 자산 현황 ("+iso(new Date())+" 기준)",3);head(ws,3,["항목","구분","금액"]);
+  S.assets.forEach(function(x,j){var r=4+j,bg=j%2?ZEBRA:null;if(x.debt)d+=x.amt;else a+=x.amt;
+    cell(ws,r,1,x.name,{bg:bg});cell(ws,r,2,x.debt?"부채":"자산",{h:"center",bg:bg,color:x.debt?RED:GREEN});cell(ws,r,3,x.amt,{h:"right",fmt:'#,##0"원"',bg:bg})});
+  var e=3+S.assets.length;
+  [["자산 합계",'"자산"',a],["부채 합계",'"부채"',d]].forEach(function(s,j){var r=e+1+j;cell(ws,r,1,s[0],{bold:true,bg:CHIP});cell(ws,r,2,null,{bg:CHIP});
+    cell(ws,r,3,{formula:"SUMIFS(C4:C"+e+",B4:B"+e+","+s[1]+")",result:s[2]},{bold:true,bg:CHIP,h:"right",fmt:'#,##0"원"'})});
+  cell(ws,e+3,1,"순자산",{bold:true,bg:CHIP});cell(ws,e+3,2,null,{bg:CHIP});
+  cell(ws,e+3,3,{formula:"C"+(e+1)+"-C"+(e+2),result:a-d},{bold:true,bg:CHIP,h:"right",fmt:MONEY});
+}
+function needXlsx(){if(window.ExcelJS)return false;alert("엑셀 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침 해주세요.");return true}
+async function xlsxSave(wb,name){
+  var buf=await wb.xlsx.writeBuffer();
+  saveFile(name,new Blob([buf],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}));
+}
+function newBook(){var wb=new ExcelJS.Workbook();wb.creator="내 가계부";wb.created=new Date();return wb}
 function exportMonth(){
   if(needXlsx())return;
   var k=S.ym.getFullYear()+"-"+String(S.ym.getMonth()+1).padStart(2,"0");
-  var rows=txRows(S.items.filter(function(x){return (x.date||"").slice(0,7)===k}));
-  if(!rows.length){alert("이 달에는 내역이 없어요.");return}
-  saveFile("가계부_"+k+".xlsx",xlsxBlob([{name:k,header:H,rows:rows}]));
+  var list=S.items.filter(function(x){return (x.date||"").slice(0,7)===k});
+  if(!list.length){alert("이 달에는 내역이 없어요.");return}
+  var wb=newBook();monthSheet(wb,k,list);catSheet(wb,k,list);xlsxSave(wb,"가계부_"+k+".xlsx");
 }
 function exportAll(){
   if(needXlsx())return;
   var ms={};S.items.forEach(function(x){if(x.date)(ms[x.date.slice(0,7)]=ms[x.date.slice(0,7)]||[]).push(x)});
   var keys=Object.keys(ms).sort();
   if(!keys.length){alert("내보낼 내역이 없어요.");return}
-  var sum=keys.map(function(k){var i=0,e=0;ms[k].forEach(function(x){if(x.type==="i")i+=x.amount;else e+=x.amount});return {"월":k,"수입":i,"지출":e,"잔액":i-e}});
-  var sheets=[{name:"월별요약",header:["월","수입","지출","잔액"],rows:sum}];
-  keys.forEach(function(k){sheets.push({name:k,header:H,rows:txRows(ms[k])})});
-  sheets.push({name:"자산",header:["항목","구분","금액"],rows:S.assets.map(function(a){return {"항목":a.name,"구분":a.debt?"부채":"자산","금액":a.amt}})});
-  saveFile("가계부_전체_"+iso(new Date())+".xlsx",xlsxBlob(sheets));
+  var wb=newBook();summarySheets(wb,keys,ms);assetSheet(wb);
+  keys.forEach(function(k){monthSheet(wb,k,ms[k])});
+  xlsxSave(wb,"가계부_전체_"+iso(new Date())+".xlsx");
 }
 function backup(){
   var o={v:2,items:S.items,cats:S.cats,cards:S.cards,assets:S.assets,billing:S.billing};
